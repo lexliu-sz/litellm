@@ -24,6 +24,7 @@ from litellm.proxy.pass_through_endpoints.pass_through_endpoints import (
     HttpPassThroughEndpointHelpers,
     InitPassThroughEndpointHelpers,
     LITELLM_PASS_THROUGH_CUSTOM_BODY_STATE_KEY,
+    _parse_request_data_by_content_type,
     _registered_pass_through_routes,
     create_pass_through_route,
     initialize_pass_through_endpoints,
@@ -54,6 +55,62 @@ def test_is_multipart():
     # Test with no content type
     request.headers = Headers({})
     assert HttpPassThroughEndpointHelpers.is_multipart(request) is False
+
+
+@pytest.mark.asyncio
+async def test_multipart_stream_field_preserves_upload_for_streaming_forward():
+    encoded_request = httpx.Request(
+        "POST",
+        "http://test.com/v1/images/edits",
+        data={"prompt": "Edit the reference.", "stream": "true"},
+        files={"image": ("source.png", b"source-image", "image/png")},
+    )
+    receive = AsyncMock(
+        return_value={
+            "type": "http.request",
+            "body": encoded_request.read(),
+            "more_body": False,
+        }
+    )
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/v1/images/edits",
+            "query_string": b"",
+            "headers": [
+                (name.lower(), value)
+                for name, value in encoded_request.headers.raw
+            ],
+        },
+        receive,
+    )
+
+    _, _, _, stream = await _parse_request_data_by_content_type(request)
+
+    assert stream is True
+
+    upstream_response = MagicMock()
+    async_client = MagicMock()
+    async_client.build_request = MagicMock(return_value=MagicMock())
+    async_client.send = AsyncMock(return_value=upstream_response)
+
+    response = await HttpPassThroughEndpointHelpers.make_multipart_http_request(
+        request=request,
+        async_client=async_client,
+        url=httpx.URL("http://upstream.test/v1/images/edits"),
+        headers={},
+        stream=stream,
+    )
+
+    assert response is upstream_response
+    async_client.send.assert_awaited_once_with(
+        async_client.build_request.return_value,
+        stream=True,
+    )
+    assert async_client.build_request.call_args.kwargs["files"] == [
+        ("image", ("source.png", b"source-image", "image/png"))
+    ]
 
 
 # Test _build_request_files_from_upload_file

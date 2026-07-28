@@ -1593,11 +1593,15 @@ async def _parse_request_data_by_content_type(
             # If custom_body is not set, use the entire body
             if custom_body_data is None and body:
                 custom_body_data = body
-        except (json.JSONDecodeError, Exception):
-            # Not JSON - this is actual multipart data
-            # Skip parsing here to avoid consuming the request body stream
-            # make_multipart_http_request will handle it
-            pass
+        except Exception:
+            form = await request.form()
+            form_stream = form.get("stream")
+            if isinstance(form_stream, str):
+                normalized_stream = form_stream.strip().lower()
+                if normalized_stream == "true":
+                    stream = True
+                elif normalized_stream == "false":
+                    stream = False
 
     elif "application/x-www-form-urlencoded" in content_type:
         # ✅ Handle URL-encoded form data
